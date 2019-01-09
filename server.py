@@ -1,14 +1,13 @@
-#  coding: utf-8 
-import socketserver
+#  coding: utf-8
 
-# Copyright 2013 Abram Hindle, Eddie Antonio Santos
-# 
+# Copyright 2013 Abram Hindle, Eddie Antonio Santos, Michael Lin
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -26,20 +25,108 @@ import socketserver
 
 # try: curl -v -X GET http://127.0.0.1:8080/
 
+from socketserver import BaseRequestHandler, TCPServer
+from os import path, chdir, getcwd
 
-class MyWebServer(socketserver.BaseRequestHandler):
-    
+STATUS_MSG = {
+    200: 'OK',
+    405: '405 Method Not Allowed',
+    404: '404 Not Found'
+}
+
+ERR_MSG = {
+    405: '''
+        <!DOCTYPE html>
+        <html>
+            <body>HTTP/1.1 405 Method Not Allowed</body>
+        </html>
+    ''',
+    404: '''
+        <!DOCTYPE html>
+        <html>
+            <body>HTTP/1.1 404 Not Found</body>
+        </html>
+    '''
+}
+
+FILE_MIME_TYPE = {
+    '.css': 'text/css',
+    '.html': 'text/html'
+}
+
+WEB_ROOT = '/www'
+
+
+class MyWebServer(BaseRequestHandler):
+
     def handle(self):
-        self.data = self.request.recv(1024).strip()
-        print ("Got a request of: %s\n" % self.data)
-        self.request.sendall(bytearray("OK",'utf-8'))
+        self.data = self.request.recv(1024).strip().decode('utf-8')
+        request_method, request_path, request_http_version = self._parse_raw_request_line(self.data)
+
+        # only support GET
+        if request_method != 'GET':
+            response = self._build_response(ERR_MSG.get(405, ''), 405, {'Content-Type': 'text/html'})
+            self.request.sendall(response)
+            return
+
+        response = ''
+        request_realpath = getcwd() + WEB_ROOT + request_path
+        if path.isfile(request_realpath) and self._is_safe_path(getcwd(), request_realpath):
+            # serve file
+            filename, file_extension = path.splitext(request_realpath)
+            if file_extension in ['.css', '.html']:
+                body = open(request_realpath).read()
+                response = self._build_response(body, headers={'Content-Type': FILE_MIME_TYPE[file_extension]})
+        elif path.isdir(request_realpath) and self._is_safe_path(getcwd(), request_realpath):
+            # check if index.html exist in the directory
+            if path.isfile('{}/index.html'.format(request_realpath)):
+                body = open('{}/index.html'.format(request_realpath)).read()
+                response = self._build_response(body, headers={'Content-Type': 'text/html'})
+        else:
+            response = self._build_response(ERR_MSG.get(404, ''), 404, {'Content-Type': 'text/html'})
+
+        self.request.sendall(response)
+
+    def _parse_raw_request_line(self, raw_request):
+        request_lines = raw_request.splitlines()
+        words = request_lines[0].split()
+
+        if len(words) == 0:
+            raise ValueError('Invalid HTTP Request')
+
+        if len(words) >= 3:
+            request_method, request_path, request_http_version = words
+
+            return request_method, request_path, request_http_version
+
+    def _build_response(self, body, status_code=200, headers={}):
+        # first line of a HTTP response
+        response = 'HTTP/1.1 {} {}\n'.format(status_code, STATUS_MSG.get(status_code, ''))
+
+        # append headers
+        for key, value in headers.items():
+            response += '{}: {}\n\n'.format(key, value)
+
+        # append body
+        response += body
+
+        return response.encode()
+
+    def _is_safe_path(self, basedir, file_path, follow_symlinks=True):
+        # resolves symbolic links
+        if follow_symlinks:
+            return path.realpath(file_path).startswith(basedir)
+
+        return path.abspath(file_path).startswith(basedir)
+
 
 if __name__ == "__main__":
     HOST, PORT = "localhost", 8080
 
-    socketserver.TCPServer.allow_reuse_address = True
+    TCPServer.allow_reuse_address = True
+
     # Create the server, binding to localhost on port 8080
-    server = socketserver.TCPServer((HOST, PORT), MyWebServer)
+    server = TCPServer((HOST, PORT), MyWebServer)
 
     # Activate the server; this will keep running until you
     # interrupt the program with Ctrl-C
