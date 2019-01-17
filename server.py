@@ -28,8 +28,10 @@
 from socketserver import BaseRequestHandler, TCPServer
 from os import path, chdir, getcwd
 
+
 STATUS_MSG = {
     200: 'OK',
+    301: '301 Moved Permanently',
     405: '405 Method Not Allowed',
     404: '404 Not Found'
 }
@@ -54,11 +56,14 @@ FILE_MIME_TYPE = {
     '.html': 'text/html'
 }
 
+HOST, PORT = "localhost", 8080
+
 WEB_ROOT = '/www'
 
 
 class MyWebServer(BaseRequestHandler):
 
+    # https://github.com/python/cpython/blob/master/Lib/http/server.py#L147
     def handle(self):
         self.data = self.request.recv(1024).strip().decode('utf-8')
         request_method, request_path, request_http_version = self._parse_raw_request_line(self.data)
@@ -72,7 +77,7 @@ class MyWebServer(BaseRequestHandler):
         response = ''
         request_realpath = getcwd() + WEB_ROOT + request_path
         if path.isfile(request_realpath) and self._is_safe_path(getcwd(), request_realpath):
-            # serve file
+            # serve file https://stackoverflow.com/questions/541390/extracting-extension-from-filename-in-python
             filename, file_extension = path.splitext(request_realpath)
             if file_extension in ['.css', '.html']:
                 body = open(request_realpath).read()
@@ -80,8 +85,12 @@ class MyWebServer(BaseRequestHandler):
         elif path.isdir(request_realpath) and self._is_safe_path(getcwd(), request_realpath):
             # check if index.html exist in the directory
             if path.isfile('{}/index.html'.format(request_realpath)):
-                body = open('{}/index.html'.format(request_realpath)).read()
-                response = self._build_response(body, headers={'Content-Type': 'text/html'})
+                if request_path.endswith('/'):
+                    body = open('{}/index.html'.format(request_realpath)).read()
+                    response = self._build_response(body, headers={'Content-Type': 'text/html'})
+                else:
+                    redirect_url = 'http://{}:{}{}/'.format(HOST, PORT, request_path)
+                    response = self._build_response(None, status_code=301, headers={'Location': redirect_url})
         else:
             response = self._build_response(ERR_MSG.get(404, ''), 404, {'Content-Type': 'text/html'})
 
@@ -108,10 +117,12 @@ class MyWebServer(BaseRequestHandler):
             response += '{}: {}\n\n'.format(key, value)
 
         # append body
-        response += body
+        if body:
+            response += body
 
         return response.encode()
 
+    # https://security.openstack.org/guidelines/dg_using-file-paths.html
     def _is_safe_path(self, basedir, file_path, follow_symlinks=True):
         # resolves symbolic links
         if follow_symlinks:
@@ -121,8 +132,6 @@ class MyWebServer(BaseRequestHandler):
 
 
 if __name__ == "__main__":
-    HOST, PORT = "localhost", 8080
-
     TCPServer.allow_reuse_address = True
 
     # Create the server, binding to localhost on port 8080
